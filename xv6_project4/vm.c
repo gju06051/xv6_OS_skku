@@ -291,7 +291,7 @@ int deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
       pa = PTE_ADDR(*pte);
       bitmap_offset = (int)(pa >> 12);
       bitmap_modify(bitmap_offset, 0);
-
+      // page_delete(pgdir, (char *)a);
       // clear page table entry
       *pte = 0;
     }
@@ -358,7 +358,7 @@ pde_t *copyuvm(pde_t *pgdir, uint sz)
       kfree(mem);
       goto bad;
     }
-    page_insert(pgdir, i);
+    page_insert(d, i);
   }
   // page insert in LRU linked list
   return d;

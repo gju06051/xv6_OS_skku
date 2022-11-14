@@ -21,7 +21,7 @@ int main(int argc, char **argv)
 	printf(1, "\n======================================Page Write A=====================================\n");
 	for (int i = 0; i < 600; i++)
 	{
-		printf(1, "Write Array A\n");
+		printf(1, "Write Array A call :  %d\n", i);
 		a[i * 1024] = i * 1024;
 		// printf(1, "number of a[%d] is %d\n", i * 1024, a[i * 1024]);
 	}
@@ -32,20 +32,20 @@ int main(int argc, char **argv)
 	printf(1, "\n======================================Page Write B=====================================\n");
 	for (int i = 0; i < 600; i++)
 	{
-		printf(1, "Write Array B\n");
+		printf(1, "Write Array B call : %d\n", i);
 		b[i * 1024] = -i * 1024;
 		// printf(1, "number of a[%d] is %d\n", i * 1024, a[i * 1024]);
 	}
 	printf(1, "\n======================================Page Read A=====================================\n");
 	for (int i = 0; i < 600; i++)
 	{
-		printf(1, "Read Array A\n");
+		printf(1, "Read Array A call : %d\n", i);
 		printf(1, "number of a[%d] is %d\n", i * 1024, a[i * 1024]);
 	}
 	printf(1, "\n======================================Page Read B=====================================\n");
 	for (int i = 0; i < 600; i++)
 	{
-		printf(1, "Read Array B\n");
+		printf(1, "Read Array B call : %d\n", i);
 		printf(1, "number of b[%d] is %d\n", i * 1024, b[i * 1024]);
 	}
 

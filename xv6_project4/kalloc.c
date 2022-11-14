@@ -26,12 +26,22 @@ struct
   struct run *freelist;
 } kmem;
 
-struct page pages[PHYSTOP / PGSIZE];
-struct page *page_lru_head;
-int num_free_pages;
-int num_lru_pages;
-char bitmap[4096];
-// int bitmap_lock;
+struct
+{
+  struct spinlock lock;
+  int use_lock;
+  struct page pages[PHYSTOP / PGSIZE];
+  struct page *page_lru_head;
+  int num_free_pages;
+  int num_lru_pages;
+} lru;
+
+struct
+{
+  struct spinlock lock;
+  int use_lock;
+  char bitmap_arr[4096];
+} bitmap;
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -42,10 +52,15 @@ void kinit1(void *vstart, void *vend)
 {
   initlock(&kmem.lock, "kmem");
   kmem.use_lock = 0;
+  initlock(&lru.lock, "lru");
+  lru.use_lock = 0;
+  initlock(&bitmap.lock, "bitmap");
+  bitmap.use_lock = 0;
+
   // initialize page policy argument
-  num_free_pages = 0;
-  num_lru_pages = 0;
-  bitmap[0] = 1;
+  lru.num_free_pages = 0;
+  lru.num_lru_pages = 0;
+  bitmap.bitmap_arr[0] = 1;
   for (int i = 2; i < PGSIZE; i++)
   {
     bitmap[i] = 0;
@@ -110,27 +125,26 @@ char *
 kalloc(void)
 {
   struct run *r;
-
-  // try_again:
   if (kmem.use_lock)
     acquire(&kmem.lock);
-  if (num_free_pages <= 0)
-  {
-    r = (struct run *)swapout();
-  }
+
+  r = kmem.freelist;
+  //  if(!r && reclaim())
+  //	  goto try_again;
+  if (r)
+    kmem.freelist = r->next;
   else
   {
-    r = kmem.freelist;
-    //  if(!r && reclaim())
-    //	  goto try_again;
-    if (r)
-      kmem.freelist = r->next;
-    else
-    {
-      cprintf("No free physical page -> ");
-      r = (struct run *)swapout();
-    }
+    if (kmem.use_lock)
+      release(&kmem.lock);
+
+    cprintf("No free physical page -> ");
+    r = (struct run *)swapout();
+
+    if (kmem.use_lock)
+      acquire(&kmem.lock);
   }
+
   num_free_pages--;
   if (kmem.use_lock)
     release(&kmem.lock);
@@ -140,14 +154,17 @@ void lru_print(void)
 {
   struct page *p_page;
   pte_t *pte;
+  int pte_n_a = 0;
   p_page = page_lru_head;
   for (int i = 0; i < num_lru_pages; i++)
   {
     pte = walkpgdir(p_page->pgdir, p_page->vaddr, 0);
+    // pte_n_a = *pte & PTE_A;
     if (p_page->vaddr == 0)
-      cprintf("LRU entry %d, pgdir : %x, vaddr : 0000, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, *pte & PTE_A, *pte);
+      cprintf("LRU entry %d, pgdir : %x, vaddr : 0000, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, (pte_n_a != 0), *pte);
+
     else
-      cprintf("LRU entry %d, pgdir : %x, vaddr : %x, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, *pte & PTE_A, *pte);
+      cprintf("LRU entry %d, pgdir : %x, vaddr : %x, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, (pte_n_a != 0), *pte);
     p_page = p_page->prev;
   }
 }
@@ -244,7 +261,7 @@ int page_delete(pde_t *pgdir, char *vaddr)
   {
     p_page = page_lru_head;
     // cprintf("p_page | pgdir : %x | vaddr : %x\n", p_page->pgdir, p_page->vaddr);
-    if ((p_page->pgdir == pgdir) && (p_page->vaddr == vaddr))
+    if ((p_page->pgdir == pgdir) && (PTE_ADDR(p_page->vaddr) == (uint)vaddr))
     {
 
       // delete page from linked list
@@ -273,8 +290,13 @@ int page_delete(pde_t *pgdir, char *vaddr)
     }
   }
   cprintf("=================================LRU linked list TOP=================================\n");
+  cprintf("Page delete target | pgdir : %x | vaddr : %x\n", pgdir, vaddr);
   lru_print();
   cprintf("=================================LRU linked list BOT=================================\n");
+  // for (int i = 0; i < PGSIZE; i++)
+  // {
+  //   cprintf("Bitmap[%d] : %x\n", i, bitmap[i]);
+  // }
   return -1;
 }
 
@@ -361,9 +383,12 @@ char *swapout(void)
       bitmap_modify(bitmap_offset, 1);
       // cprintf("bitmap modify occur\n");
       // free the victim page
-      kmem.use_lock = 0;
+      if (kmem.use_lock)
+        acquire(&kmem.lock);
       kfree(mem);
       kmem.use_lock = 1;
+      if (kmem.use_lock)
+        release(&kmem.lock);
       // cprintf("kfree occur\n");
       // page structure initialize for next use
       p_page->use = 0;

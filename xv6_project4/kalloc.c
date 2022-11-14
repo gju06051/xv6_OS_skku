@@ -40,8 +40,20 @@ struct
 {
   struct spinlock lock;
   int use_lock;
+} swapout_lock;
+
+struct
+{
+  struct spinlock lock;
+  int use_lock;
   char bitmap_arr[4096];
 } bitmap;
+
+struct
+{
+  struct spinlock lock;
+  int use_lock;
+} page_fault_lock;
 
 // Initialization happens in two phases.
 // 1. main() calls kinit1() while still using entrypgdir to place just
@@ -56,6 +68,17 @@ void kinit1(void *vstart, void *vend)
   lru.use_lock = 0;
   initlock(&bitmap.lock, "bitmap");
   bitmap.use_lock = 0;
+  initlock(&swapout_lock.lock, "swap_control");
+  swapout_lock.use_lock = 0;
+  initlock(&swapout_lock.lock, "swap_control");
+  page_fault_lock.use_lock = 0;
+
+  if (kmem.use_lock)
+    acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
+  if (bitmap.use_lock)
+    acquire(&bitmap.lock);
 
   // initialize page policy argument
   lru.num_free_pages = 0;
@@ -63,20 +86,31 @@ void kinit1(void *vstart, void *vend)
   bitmap.bitmap_arr[0] = 1;
   for (int i = 2; i < PGSIZE; i++)
   {
-    bitmap[i] = 0;
+    bitmap.bitmap_arr[i] = 0;
   }
   for (int i = 0; i < PHYSTOP / PGSIZE; i++)
   {
-    pages[i].use = 0;
+    lru.pages[i].use = 0;
   }
+  if (kmem.use_lock)
+    release(&kmem.lock);
+  if (lru.use_lock)
+    release(&lru.lock);
+  if (bitmap.use_lock)
+    release(&bitmap.lock);
+
   freerange(vstart, vend);
 }
 
 void kinit2(void *vstart, void *vend)
 {
   freerange(vstart, vend);
-  cprintf("kinit2 finished | num_free_page : %d, num_lru_page : %d\n", num_free_pages, num_lru_pages);
+
   kmem.use_lock = 1;
+  lru.use_lock = 1;
+  bitmap.use_lock = 1;
+  swapout_lock.use_lock = 1;
+  page_fault_lock.use_lock = 1;
 }
 
 void freerange(void *vstart, void *vend)
@@ -108,14 +142,10 @@ void kfree(char *v)
   // Fill with junk to catch dangling refs.
   memset(v, 1, PGSIZE);
 
-  if (kmem.use_lock)
-    acquire(&kmem.lock);
   r = (struct run *)v;
   r->next = kmem.freelist;
   kmem.freelist = r;
-  num_free_pages++;
-  if (kmem.use_lock)
-    release(&kmem.lock);
+  lru.num_free_pages++;
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -127,27 +157,45 @@ kalloc(void)
   struct run *r;
   if (kmem.use_lock)
     acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
+  if (bitmap.use_lock)
+    acquire(&bitmap.lock);
 
   r = kmem.freelist;
+
   //  if(!r && reclaim())
   //	  goto try_again;
+  lru.num_free_pages--;
   if (r)
+  {
     kmem.freelist = r->next;
+    if (kmem.use_lock)
+      release(&kmem.lock);
+    if (lru.use_lock)
+      release(&lru.lock);
+    if (bitmap.use_lock)
+      release(&bitmap.lock);
+  }
   else
   {
     if (kmem.use_lock)
       release(&kmem.lock);
-
+    if (lru.use_lock)
+      release(&lru.lock);
+    if (bitmap.use_lock)
+      release(&bitmap.lock);
     cprintf("No free physical page -> ");
     r = (struct run *)swapout();
-
+    kmem.freelist = r->next;
     if (kmem.use_lock)
-      acquire(&kmem.lock);
+      release(&kmem.lock);
+    if (lru.use_lock)
+      release(&lru.lock);
+    if (bitmap.use_lock)
+      release(&bitmap.lock);
   }
 
-  num_free_pages--;
-  if (kmem.use_lock)
-    release(&kmem.lock);
   return (char *)r;
 }
 void lru_print(void)
@@ -155,8 +203,13 @@ void lru_print(void)
   struct page *p_page;
   pte_t *pte;
   int pte_n_a = 0;
-  p_page = page_lru_head;
-  for (int i = 0; i < num_lru_pages; i++)
+  if (kmem.use_lock)
+    acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
+
+  p_page = lru.page_lru_head;
+  for (int i = 0; i < lru.num_lru_pages; i++)
   {
     pte = walkpgdir(p_page->pgdir, p_page->vaddr, 0);
     // pte_n_a = *pte & PTE_A;
@@ -167,6 +220,10 @@ void lru_print(void)
       cprintf("LRU entry %d, pgdir : %x, vaddr : %x, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, (pte_n_a != 0), *pte);
     p_page = p_page->prev;
   }
+  if (kmem.use_lock)
+    release(&kmem.lock);
+  if (lru.use_lock)
+    release(&lru.lock);
 }
 
 void page_insert(pde_t *pgdir, uint vaddr)
@@ -174,73 +231,80 @@ void page_insert(pde_t *pgdir, uint vaddr)
   // cprintf("================Page insert start================\n");
   struct page *new_page, *next_page;
   // lru entry insert
+  if (kmem.use_lock)
+    acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
+  if (bitmap.use_lock)
+    acquire(&bitmap.lock);
+
   for (int i = 0; i < (PHYSTOP / PGSIZE); i++)
   {
     // search not using page
-    new_page = &pages[i];
+    new_page = &lru.pages[i];
     if (new_page->use == 0)
     {
       break;
     }
   }
 
-  if (num_lru_pages == 0)
+  if (lru.num_lru_pages == 0)
   {
     // case of first lru entry
-    page_lru_head = new_page;
-    page_lru_head->prev = new_page;
-    page_lru_head->next = new_page;
+    lru.page_lru_head = new_page;
+    lru.page_lru_head->prev = new_page;
+    lru.page_lru_head->next = new_page;
 
     // page entry setting
-    num_lru_pages++;
+    lru.num_lru_pages++;
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
     if (vaddr == 0)
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", lru.num_lru_pages, new_page->pgdir);
     else
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", lru.num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
-  else if (num_lru_pages == 1)
+  else if (lru.num_lru_pages == 1)
   {
     // case of second lru entry
     next_page = new_page;
 
-    page_lru_head->next = new_page;
-    page_lru_head->prev = new_page;
-    new_page->prev = page_lru_head;
-    new_page->next = page_lru_head;
+    lru.page_lru_head->next = new_page;
+    lru.page_lru_head->prev = new_page;
+    new_page->prev = lru.page_lru_head;
+    new_page->next = lru.page_lru_head;
 
-    num_lru_pages++;
+    lru.num_lru_pages++;
     // page entry setting
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
     if (vaddr == 0)
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", lru.num_lru_pages, new_page->pgdir);
     else
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", lru.num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
   else
   {
     // case of above third lru entry
-    next_page = page_lru_head->next;
+    next_page = lru.page_lru_head->next;
 
-    page_lru_head->next = new_page;
-    new_page->prev = page_lru_head;
+    lru.page_lru_head->next = new_page;
+    new_page->prev = lru.page_lru_head;
 
     new_page->next = next_page;
     next_page->prev = new_page;
 
-    num_lru_pages++;
+    lru.num_lru_pages++;
     // page entry setting
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
     if (vaddr == 0)
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", lru.num_lru_pages, new_page->pgdir);
     else
-      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", lru.num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
   // cprintf("====lru entry top====\n");
   // lru_print();
@@ -248,18 +312,28 @@ void page_insert(pde_t *pgdir, uint vaddr)
   cprintf("PTE : %x\n", walkpgdir(new_page->pgdir, new_page->vaddr, 0));
 
   // cprintf("================Page insert finished================\n");
+  if (kmem.use_lock)
+    release(&kmem.lock);
+  if (lru.use_lock)
+    release(&lru.lock);
+  if (bitmap.use_lock)
+    release(&bitmap.lock);
 }
 
 int page_delete(pde_t *pgdir, char *vaddr)
 {
   struct page *p_page, *temp_head, *f_page, *b_page;
   // cprintf("================Page delete start================\n");
+  if (kmem.use_lock)
+    acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
 
-  temp_head = page_lru_head;
+  temp_head = lru.page_lru_head;
   // cprintf("page delete target | pgdir : %x | vaddr : %x\n", pgdir, vaddr);
-  for (int i = 0; i < num_lru_pages; i++) // search lru with vaddr, pgdir
+  for (int i = 0; i < lru.num_lru_pages; i++) // search lru with vaddr, pgdir
   {
-    p_page = page_lru_head;
+    p_page = lru.page_lru_head;
     // cprintf("p_page | pgdir : %x | vaddr : %x\n", p_page->pgdir, p_page->vaddr);
     if ((p_page->pgdir == pgdir) && (PTE_ADDR(p_page->vaddr) == (uint)vaddr))
     {
@@ -274,29 +348,39 @@ int page_delete(pde_t *pgdir, char *vaddr)
       // clear use bit
       p_page->use = 0;
       // page count down
-      num_lru_pages--;
+      lru.num_lru_pages--;
       // restore head
-      page_lru_head = temp_head->prev;
+      lru.page_lru_head = temp_head->prev;
       if (vaddr == 0)
-        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : 0000\n", num_lru_pages, p_page->pgdir);
+        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : 0000\n", lru.num_lru_pages, p_page->pgdir);
       else
-        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : %x\n", num_lru_pages, p_page->pgdir, p_page->vaddr);
+        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : %x\n", lru.num_lru_pages, p_page->pgdir, p_page->vaddr);
       // cprintf("================Page delete end================\n");
+      if (kmem.use_lock)
+        release(&kmem.lock);
+      if (lru.use_lock)
+        release(&lru.lock);
+
       return 0;
     }
     else
     {
-      page_lru_head = page_lru_head->prev;
+      lru.page_lru_head = lru.page_lru_head->prev;
     }
   }
   cprintf("=================================LRU linked list TOP=================================\n");
-  cprintf("Page delete target | pgdir : %x | vaddr : %x\n", pgdir, vaddr);
+  cprintf("Page delete target, pgdir : %x, vaddr : %x, PTE\n", pgdir, vaddr, *walkpgdir(pgdir, vaddr, 0));
+  if (kmem.use_lock)
+    release(&kmem.lock);
+  if (lru.use_lock)
+    release(&lru.lock);
   lru_print();
   cprintf("=================================LRU linked list BOT=================================\n");
   // for (int i = 0; i < PGSIZE; i++)
   // {
   //   cprintf("Bitmap[%d] : %x\n", i, bitmap[i]);
   // }
+
   return -1;
 }
 
@@ -307,13 +391,14 @@ char *swapout(void)
   char set_bit;
   char *mem;
   int bitmap_offset_get = 0;
-  // cprintf("================swap out start================\n");
-
   int bitmap_offset = 0;
-  if (num_lru_pages == 0)
+  int k;
+
+  if (lru.num_lru_pages == 0)
   {
     panic("OOM Error");
   }
+  k = lru.num_lru_pages;
 
   // get bitmap free
   for (int i = 0; i < PGSIZE; i++)
@@ -324,7 +409,7 @@ char *swapout(void)
     for (int j = 0; j < 8; j++)
     {
       //  get low bit in bitmap
-      if ((set_bit & bitmap[i]) == 0)
+      if ((set_bit & bitmap.bitmap_arr[i]) == 0)
       {
         // get idx of bitmap
         bitmap_offset = 8 * i + j;
@@ -338,25 +423,18 @@ char *swapout(void)
       }
     }
   }
-  /*
-  cprintf("============page entry top\n");
-  p_page = page_lru_head;
-  for (int i = 0; i < num_lru_pages; i++)
-  {
-    cprintf("present page info | pgdir : %x | vaddr : %x | PTE_ADDR : %x\n", p_page->pgdir, p_page->vaddr, PTE_ADDR(walkpgdir(p_page->pgdir, p_page->vaddr, 0)));
-    p_page = p_page->prev;
-  }
-  cprintf("============page entry bottom\n");
-  */
+
   // victim page process
-  for (int i = 0; i < num_lru_pages + 10; i++)
+  for (int i = 0; i < k + 10; i++)
   {
-    p_page = page_lru_head;
+
+    p_page = lru.page_lru_head;
     pte = walkpgdir(p_page->pgdir, p_page->vaddr, 0);
     mem = P2V((PTE_ADDR(*pte)));
+
     if ((*pte != 0) && ((*pte & PTE_A) == 0)) // ref bit low
     {
-      // cprintf("==============victim page start==============\n");
+
       if (p_page->vaddr == 0)
         cprintf("Swapout victim page | pgdir : %x,vaddr : 0000, PTE : %x, Modified PTE : %x\n", p_page->pgdir, *pte, (((bitmap_offset << 12) | PTE_FLAGS(*pte)) & (~PTE_P)));
       else
@@ -369,44 +447,44 @@ char *swapout(void)
       // cprintf("pte modify occur\n");
       // Clear the PTE_P
       *pte = *pte & (~PTE_P);
-      // cprintf("PTE_P clear occur\n");
-      // Flush TLB
+
       lcr3(V2P(p_page->pgdir));
-      // cprintf("flush occur\n");
+
       // go to previous page
-      page_lru_head = page_lru_head->prev;
+      lru.page_lru_head = lru.page_lru_head->prev;
       // Remove the victim page from LRU list
-      page_lru_head->next = p_page->next;
-      p_page->next->prev = page_lru_head;
-      // cprintf("page out of lru occur\n");
+      lru.page_lru_head->next = p_page->next;
+      p_page->next->prev = lru.page_lru_head;
       // Set up the corresponding bit in bitmap
       bitmap_modify(bitmap_offset, 1);
-      // cprintf("bitmap modify occur\n");
+      // page structure initialize for next use
+      lru.num_lru_pages--;
+      p_page->use = 0;
+
       // free the victim page
+      kfree(mem);
+
+      // cprintf("================swap out end================\n");
       if (kmem.use_lock)
         acquire(&kmem.lock);
-      kfree(mem);
-      kmem.use_lock = 1;
-      if (kmem.use_lock)
-        release(&kmem.lock);
-      // cprintf("kfree occur\n");
-      // page structure initialize for next use
-      p_page->use = 0;
-      num_lru_pages--;
-      // cprintf("==============victim page end==============\n");
-      // cprintf("================swap out end================\n");
+      if (lru.use_lock)
+        acquire(&lru.lock);
+      if (bitmap.use_lock)
+        acquire(&bitmap.lock);
       return mem;
     }
     else // ref bit high
     {
+
       // clear the flag
       // cprintf("clear flag occur\n");
       *pte = *pte & (~PTE_A);
       // go to previous page
-      page_lru_head = page_lru_head->prev;
+      lru.page_lru_head = lru.page_lru_head->prev;
     }
   }
   cprintf("================swap out err================\n");
+
   lru_print();
 
   panic("swap out err not found zero page");
@@ -414,17 +492,27 @@ char *swapout(void)
 
 void bitmap_modify(int bitmap_offset, int set)
 {
-  // cprintf("================bitmap modify start================\n");
+  if (kmem.use_lock)
+    acquire(&kmem.lock);
+  if (lru.use_lock)
+    acquire(&lru.lock);
+  if (bitmap.use_lock)
+    acquire(&bitmap.lock);
 
   if (set == 0) // unset
   {
-    bitmap[bitmap_offset / 8] = bitmap[bitmap_offset / 8] & (~(1 << bitmap_offset % 8));
+    bitmap.bitmap_arr[bitmap_offset / 8] = bitmap.bitmap_arr[bitmap_offset / 8] & (~(1 << bitmap_offset % 8));
   }
   else // set
   {
-    bitmap[bitmap_offset / 8] = bitmap[bitmap_offset / 8] | (1 << bitmap_offset % 8);
+    bitmap.bitmap_arr[bitmap_offset / 8] = bitmap.bitmap_arr[bitmap_offset / 8] | (1 << bitmap_offset % 8);
   }
-  // cprintf("================bitmap modify end================\n");
+  if (kmem.use_lock)
+    release(&kmem.lock);
+  if (lru.use_lock)
+    release(&lru.lock);
+  if (bitmap.use_lock)
+    release(&bitmap.lock);
 }
 
 int page_fault_handler(pde_t *pgdir, uint vaddr)
@@ -461,6 +549,7 @@ int page_fault_handler(pde_t *pgdir, uint vaddr)
     page_insert(pgdir, vaddr);
     // clear the corresponding bit in the
     bitmap_modify(bitmap_offset, 0);
+
     // cprintf("================Page fault(swappable) end================\n");
   }
   else // page fault occur not exist

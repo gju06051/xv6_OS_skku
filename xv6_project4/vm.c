@@ -280,7 +280,6 @@ int deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
         panic("kfree");
       char *v = P2V(pa);
       // remove from LRU list
-      cprintf("delete lru page call\n");
       page_delete(pgdir, (char *)a);
       kfree(v);
       *pte = 0;

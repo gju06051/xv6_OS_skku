@@ -60,8 +60,7 @@ void kinit1(void *vstart, void *vend)
 void kinit2(void *vstart, void *vend)
 {
   freerange(vstart, vend);
-  cprintf("kinit2 finished | num_free_page : %d | num_lru_page : %d\n", num_free_pages, num_lru_pages);
-
+  cprintf("kinit2 finished | num_free_page : %d, num_lru_page : %d\n", num_free_pages, num_lru_pages);
   kmem.use_lock = 1;
 }
 
@@ -127,7 +126,10 @@ kalloc(void)
     if (r)
       kmem.freelist = r->next;
     else
+    {
+      cprintf("No free physical page -> ");
       r = (struct run *)swapout();
+    }
   }
   num_free_pages--;
   if (kmem.use_lock)
@@ -142,7 +144,10 @@ void lru_print(void)
   for (int i = 0; i < num_lru_pages; i++)
   {
     pte = walkpgdir(p_page->pgdir, p_page->vaddr, 0);
-    cprintf("lru_entry %d | pgdir : %x | vaddr : %x | use : %d | PTE_A : %x | PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, *pte & PTE_A, *pte);
+    if (p_page->vaddr == 0)
+      cprintf("LRU entry %d, pgdir : %x, vaddr : 0000, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, *pte & PTE_A, *pte);
+    else
+      cprintf("LRU entry %d, pgdir : %x, vaddr : %x, use : %d, PTE_A : %x, PTE : %x\n", i, p_page->pgdir, p_page->vaddr, p_page->use, *pte & PTE_A, *pte);
     p_page = p_page->prev;
   }
 }
@@ -174,7 +179,10 @@ void page_insert(pde_t *pgdir, uint vaddr)
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
-    cprintf("page insert | lru_page_num : %d | pgdir : %x | vaddr : %x", num_lru_pages, new_page->pgdir, new_page->vaddr);
+    if (vaddr == 0)
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+    else
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
   else if (num_lru_pages == 1)
   {
@@ -191,7 +199,10 @@ void page_insert(pde_t *pgdir, uint vaddr)
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
-    cprintf("page insert | lru_page_num : %d | pgdir : %x | vaddr : %x", num_lru_pages, new_page->pgdir, new_page->vaddr);
+    if (vaddr == 0)
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+    else
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
   else
   {
@@ -209,12 +220,15 @@ void page_insert(pde_t *pgdir, uint vaddr)
     new_page->pgdir = pgdir;
     new_page->vaddr = (char *)vaddr;
     new_page->use = 1;
-    cprintf("page insert | lru_page_num : %d | pgdir : %x | vaddr : %x", num_lru_pages, new_page->pgdir, new_page->vaddr);
+    if (vaddr == 0)
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : 0000, ", num_lru_pages, new_page->pgdir);
+    else
+      cprintf("Page insert | num_lru_pages : %d, pgdir : %x, vaddr : %x, ", num_lru_pages, new_page->pgdir, new_page->vaddr);
   }
   // cprintf("====lru entry top====\n");
   // lru_print();
   // cprintf("====lru entry bottom====\n");
-  cprintf(" | \tPTE : %x\n", walkpgdir(new_page->pgdir, new_page->vaddr, 0));
+  cprintf("PTE : %x\n", walkpgdir(new_page->pgdir, new_page->vaddr, 0));
 
   // cprintf("================Page insert finished================\n");
 }
@@ -232,6 +246,7 @@ int page_delete(pde_t *pgdir, char *vaddr)
     // cprintf("p_page | pgdir : %x | vaddr : %x\n", p_page->pgdir, p_page->vaddr);
     if ((p_page->pgdir == pgdir) && (p_page->vaddr == vaddr))
     {
+
       // delete page from linked list
       f_page = p_page->prev;
       b_page = p_page->next;
@@ -245,6 +260,10 @@ int page_delete(pde_t *pgdir, char *vaddr)
       num_lru_pages--;
       // restore head
       page_lru_head = temp_head->prev;
+      if (vaddr == 0)
+        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : 0000\n", num_lru_pages, p_page->pgdir);
+      else
+        cprintf("Page Delete | num_lru_pages : %d, pgdir : %x, vaddr : %x\n", num_lru_pages, p_page->pgdir, p_page->vaddr);
       // cprintf("================Page delete end================\n");
       return 0;
     }
@@ -253,7 +272,9 @@ int page_delete(pde_t *pgdir, char *vaddr)
       page_lru_head = page_lru_head->prev;
     }
   }
-  // cprintf("================Page delete not exist================\n");
+  cprintf("=================================LRU linked list TOP=================================\n");
+  lru_print();
+  cprintf("=================================LRU linked list BOT=================================\n");
   return -1;
 }
 
@@ -280,15 +301,12 @@ char *swapout(void)
       break;
     for (int j = 0; j < 8; j++)
     {
-      // cprintf("setbit : %d\n", set_bit);
-      // cprintf("bitmap[%d] : %d\n", i, bitmap[i]);
       //  get low bit in bitmap
       if ((set_bit & bitmap[i]) == 0)
       {
         // get idx of bitmap
         bitmap_offset = 8 * i + j;
         bitmap_offset_get = 1;
-        // cprintf("offset is %d\n", bitmap_offset);
         break;
       }
       else
@@ -314,17 +332,18 @@ char *swapout(void)
     p_page = page_lru_head;
     pte = walkpgdir(p_page->pgdir, p_page->vaddr, 0);
     mem = P2V((PTE_ADDR(*pte)));
-    // cprintf("present page info | pgdir : %x | vaddr : %x | PTE : %x | MEM : %x\n", p_page->pgdir, p_page->vaddr, *pte, mem);
-    // cprintf("*pte & PTE_A = %x\n", *pte & PTE_A);
     if ((*pte != 0) && ((*pte & PTE_A) == 0)) // ref bit low
     {
       // cprintf("==============victim page start==============\n");
-      cprintf("swapout victim page | pgdir : %x | vaddr : %x | PTE : %x | MEM : %x\n", p_page->pgdir, p_page->vaddr, *pte, mem);
+      if (p_page->vaddr == 0)
+        cprintf("Swapout victim page | pgdir : %x,vaddr : 0000, PTE : %x, Modified PTE : %x\n", p_page->pgdir, *pte, (((bitmap_offset << 12) | PTE_FLAGS(*pte)) & (~PTE_P)));
+      else
+        cprintf("Swapout victim page | pgdir : %x, vaddr : %x, PTE : %x, Modified PTE : %x\n", p_page->pgdir, p_page->vaddr, *pte, (((bitmap_offset << 12) | PTE_FLAGS(*pte)) & (~PTE_P)));
       // swapwrite to write the vicitm page to the swap space
       swapwrite(mem, bitmap_offset);
       // cprintf("swap write occur\n");
       // Write the swap space offset into the PFN field of the PTE
-      *pte = (bitmap_offset << 12) | PTE_FLAGS(pte);
+      *pte = (bitmap_offset << 12) | PTE_FLAGS(*pte);
       // cprintf("pte modify occur\n");
       // Clear the PTE_P
       *pte = *pte & (~PTE_P);
@@ -388,17 +407,15 @@ int page_fault_handler(pde_t *pgdir, uint vaddr)
   char *mem;
   pte_t *pte;
   int bitmap_offset;
-  cprintf("Page fault at %x\n", vaddr);
 
   // PTE check
+  cprintf("Page Fault Occur at %x -> ", vaddr);
   pte = walkpgdir(pgdir, (void *)vaddr, 0);
-  // cprintf("present page info | pgdir : %x | vaddr : %x | PTE : %x\n", pgdir, vaddr, *pte);
-  // cprintf("*pte & PTE_P = %x\n", *pte & PTE_P);
   if ((*pte != 0) && ((*pte & PTE_P) == 0)) // page-fault occur where swapped out page
   {
     // cprintf("================Page fault(swappable) start================\n");
     // allocate physical page
-    cprintf("Memory allocation\n");
+    cprintf("Mem alloc -> ");
     mem = kalloc();
     if (mem == 0)
     {
@@ -410,12 +427,12 @@ int page_fault_handler(pde_t *pgdir, uint vaddr)
     bitmap_offset = (PTE_ADDR(*pte)) >> 12;
     // swapread to the page from swap space
     swapread(mem, bitmap_offset);
+    cprintf("Swap read -> ");
     // change PTE value with physical address & PTE_P set - do not call mappages(already mapped)
     *pte = PTE_ADDR(V2P(mem)) | PTE_U | PTE_W | PTE_P;
     // cprintf("PTE : %x\n", *pte);
     // cprintf("PTE by walkpgdir : %x\n", walkpgdir(pgdir, (void *)vaddr, 0));
     // insert the page into LRU list
-    cprintf("Swap in | ");
     page_insert(pgdir, vaddr);
     // clear the corresponding bit in the
     bitmap_modify(bitmap_offset, 0);

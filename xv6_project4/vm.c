@@ -280,6 +280,7 @@ int deallocuvm(pde_t *pgdir, uint oldsz, uint newsz)
         panic("kfree");
       char *v = P2V(pa);
       // remove from LRU list
+      cprintf("delete lru page call\n");
       page_delete(pgdir, (char *)a);
       kfree(v);
       *pte = 0;
@@ -357,9 +358,9 @@ pde_t *copyuvm(pde_t *pgdir, uint sz)
       kfree(mem);
       goto bad;
     }
+    page_insert(pgdir, i);
   }
   // page insert in LRU linked list
-  page_insert(pgdir, i);
   return d;
 
 bad:

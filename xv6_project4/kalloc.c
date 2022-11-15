@@ -368,14 +368,14 @@ int page_delete(pde_t *pgdir, char *vaddr)
       lru.page_lru_head = lru.page_lru_head->prev;
     }
   }
-  cprintf("=================================LRU linked list TOP=================================\n");
+  // cprintf("=================================LRU linked list TOP=================================\n");
   cprintf("Page delete target, pgdir : %x, vaddr : %x, PTE\n", pgdir, vaddr, *walkpgdir(pgdir, vaddr, 0));
   if (kmem.use_lock)
     release(&kmem.lock);
   if (lru.use_lock)
     release(&lru.lock);
-  lru_print();
-  cprintf("=================================LRU linked list BOT=================================\n");
+  // lru_print();
+  // cprintf("=================================LRU linked list BOT=================================\n");
   // for (int i = 0; i < PGSIZE; i++)
   // {
   //   cprintf("Bitmap[%d] : %x\n", i, bitmap[i]);
@@ -444,17 +444,16 @@ char *swapout(void)
       // cprintf("swap write occur\n");
       // Write the swap space offset into the PFN field of the PTE
       *pte = (bitmap_offset << 12) | PTE_FLAGS(*pte);
-      // cprintf("pte modify occur\n");
       // Clear the PTE_P
       *pte = *pte & (~PTE_P);
-
-      lcr3(V2P(p_page->pgdir));
 
       // go to previous page
       lru.page_lru_head = lru.page_lru_head->prev;
       // Remove the victim page from LRU list
       lru.page_lru_head->next = p_page->next;
       p_page->next->prev = lru.page_lru_head;
+
+      lcr3(V2P(p_page->pgdir));
       // Set up the corresponding bit in bitmap
       bitmap_modify(bitmap_offset, 1);
       // page structure initialize for next use
@@ -554,7 +553,7 @@ int page_fault_handler(pde_t *pgdir, uint vaddr)
   }
   else // page fault occur not exist
   {
-    cprintf("================Page fault(non swappable) start================\n");
+    // cprintf("================Page fault(non swappable) start================\n");
     /*
     // allocate physical page
     mem = kalloc();
@@ -568,7 +567,7 @@ int page_fault_handler(pde_t *pgdir, uint vaddr)
     // mapping physical page with virtual page
     mappages(pgdir, vaddr, PGSIZE, V2P(mem), PTE_P | PTE_W | PTE_U);
     */
-    cprintf("================Page fault(non swappable) end================\n");
+    // cprintf("================Page fault(non swappable) end================\n");
   }
   // cprintf("================Page fault end================\n");
 

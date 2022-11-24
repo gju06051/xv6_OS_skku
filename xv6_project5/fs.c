@@ -372,8 +372,8 @@ void iunlockput(struct inode *ip)
 // If there is no such block, bmap allocates one.
 static uint bmap(struct inode *ip, uint bn)
 {
-  uint addr, *a;
-  struct buf *bp;
+  uint addr, *a, *a2;
+  struct buf *bp, *bp2;
 
   if (bn < NDIRECT)
   {
@@ -385,7 +385,7 @@ static uint bmap(struct inode *ip, uint bn)
 
   if (bn < NINDIRECT)
   {
-    // Load indirect block, allocating if necessary.
+    // Load single indirect block, allocating if necessary.
     if ((addr = ip->addrs[NDIRECT]) == 0)
       ip->addrs[NDIRECT] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
@@ -396,6 +396,33 @@ static uint bmap(struct inode *ip, uint bn)
       log_write(bp);
     }
     brelse(bp);
+    return addr;
+  }
+
+  bn -= NINDIRECT;
+  if (bn < NINDIRECT * NINDIRECT)
+  {
+    // Load double indirect block, allocating if necessary.
+    if ((addr = ip->addrs[NDIRECT + NINDIRECT]) == 0)
+      ip->addrs[NDIRECT + NINDIRECT] = addr = balloc(ip->dev);
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn]) == 0)
+    {
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp);
+
+    bp2 = bread(ip->dev, addr);
+    a2 = (uint *)bp2->data;
+    if ((addr = a2[bn]) == 0)
+    {
+      a2[bn] = addr = balloc(ip->dev);
+      log_write(bp2);
+    }
+    brelse(bp2);
+
     return addr;
   }
 
@@ -714,4 +741,68 @@ void swapwrite(char *ptr, int blkno)
     bwrite(bp);
     brelse(bp);
   }
+}
+
+uint baddr(int fp, int offset)
+{
+  struct proc *p = myproc();
+  struct file *f;
+
+  f = p->ofile[fp];
+
+  struct inode *ip = f->ip;
+
+  uint addr, *a, *a2;
+  struct buf *bp, *bp2;
+
+  uint bn = offset / BSIZE;
+
+  if (bn < NDIRECT)
+  {
+    if ((addr = ip->addrs[bn]) == 0)
+      return -1;
+    return addr;
+  }
+  bn -= NDIRECT;
+
+  if (bn < NINDIRECT)
+  {
+    // Load single indirect block, allocating if necessary.
+    if ((addr = ip->addrs[NDIRECT]) == 0)
+      return -1;
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn]) == 0)
+    {
+      return -1;
+    }
+    brelse(bp);
+    return addr;
+  }
+
+  bn -= NINDIRECT;
+  if (bn < NINDIRECT * NINDIRECT)
+  {
+    // Load double indirect block, allocating if necessary.
+    if ((addr = ip->addrs[NDIRECT + NINDIRECT]) == 0)
+      return -1;
+    bp = bread(ip->dev, addr);
+    a = (uint *)bp->data;
+    if ((addr = a[bn]) == 0)
+    {
+      return -1;
+    }
+    brelse(bp);
+
+    bp2 = bread(ip->dev, addr);
+    a2 = (uint *)bp2->data;
+    if ((addr = a2[bn]) == 0)
+    {
+      return -1;
+    }
+    brelse(bp2);
+    return addr;
+  }
+
+  return -1;
 }

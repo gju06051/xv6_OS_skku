@@ -5,6 +5,7 @@
         "user.h": "c",
         "file.h": "c",
         "proc.h": "c",
-        "param.h": "c"
+        "param.h": "c",
+        "fs.h": "c"
     }
 }
